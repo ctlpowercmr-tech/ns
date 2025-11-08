@@ -1,6 +1,6 @@
 const { Pool } = require('pg');
-const bcrypt = require('bcryptjs');
 
+// Configuration de la connexion PostgreSQL
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
@@ -9,6 +9,7 @@ const pool = new Pool({
   max: 20,
 });
 
+// Test de connexion
 async function testerConnexionBDD() {
   try {
     const client = await pool.connect();
@@ -21,20 +22,29 @@ async function testerConnexionBDD() {
   }
 }
 
+// Initialiser la base de données
 async function initialiserBDD() {
   try {
     const client = await pool.connect();
     
     // Table des utilisateurs
     await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
+      CREATE TABLE IF NOT EXISTS utilisateurs (
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
         nom VARCHAR(100) NOT NULL,
         telephone VARCHAR(20),
-        solde DECIMAL(10,2) DEFAULT 0.00,
         created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
+    // Table des soldes
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS soldes (
+        user_id INTEGER PRIMARY KEY REFERENCES utilisateurs(id),
+        solde DECIMAL(10,2) NOT NULL DEFAULT 0.00,
         updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
@@ -43,7 +53,7 @@ async function initialiserBDD() {
     await client.query(`
       CREATE TABLE IF NOT EXISTS transactions (
         id VARCHAR(20) PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id),
+        user_id INTEGER REFERENCES utilisateurs(id),
         montant DECIMAL(10,2) NOT NULL,
         boissons JSONB NOT NULL,
         statut VARCHAR(20) NOT NULL,
@@ -54,27 +64,19 @@ async function initialiserBDD() {
       )
     `);
     
-    // Table des recharges
+    // Table des rechargements
     await client.query(`
-      CREATE TABLE IF NOT EXISTS recharges (
+      CREATE TABLE IF NOT EXISTS rechargements (
         id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id),
+        user_id INTEGER REFERENCES utilisateurs(id),
         montant DECIMAL(10,2) NOT NULL,
         operateur VARCHAR(50) NOT NULL,
         numero_telephone VARCHAR(20) NOT NULL,
         statut VARCHAR(20) DEFAULT 'en_attente',
-        date_creation TIMESTAMP DEFAULT NOW(),
-        date_validation TIMESTAMP
+        date_demande TIMESTAMP DEFAULT NOW(),
+        date_traitement TIMESTAMP
       )
     `);
-    
-    // Créer un utilisateur admin par défaut
-    const hashedPassword = await bcrypt.hash('admin123', 10);
-    await client.query(`
-      INSERT INTO users (email, password, nom, telephone, solde) 
-      VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (email) DO NOTHING
-    `, ['admin@distributeur.com', hashedPassword, 'Administrateur', '+237600000000', 10000.00]);
     
     client.release();
     console.log('✅ Base de données initialisée avec succès');
@@ -85,20 +87,20 @@ async function initialiserBDD() {
   }
 }
 
-// Maintenance de la connexion
+// Garder la connexion active
 setInterval(async () => {
   try {
     const client = await pool.connect();
     await client.query('SELECT 1');
     client.release();
+    console.log('🔄 Connexion PostgreSQL maintenue active');
   } catch (error) {
-    console.error('Erreur maintenance connexion:', error);
+    console.error('❌ Erreur maintenance connexion:', error);
   }
 }, 300000);
 
 module.exports = {
   pool,
   testerConnexionBDD,
-  initialiserBDD,
-  bcrypt
+  initialiserBDD
 };
