@@ -1,72 +1,113 @@
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 
+// Configuration robuste de la connexion
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: {
+    rejectUnauthorized: false
+  },
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
   max: 20,
+  min: 2
 });
 
+// Test de connexion
 async function testerConnexionBDD() {
   try {
     const client = await pool.connect();
-    await client.query('SELECT 1');
-    client.release();
     console.log('✅ Connexion PostgreSQL établie');
+    
+    // Test supplémentaire
+    const result = await client.query('SELECT version()');
+    console.log('📊 Version PostgreSQL:', result.rows[0].version);
+    
+    client.release();
     return true;
   } catch (error) {
-    console.error('❌ Erreur connexion PostgreSQL:', error);
+    console.error('❌ Erreur connexion PostgreSQL:', error.message);
     return false;
   }
 }
 
+// Vérifier si les tables existent
+async function tablesExistent() {
+  try {
+    const client = await pool.connect();
+    const result = await client.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+      AND table_name IN ('utilisateurs', 'transactions', 'distributeur')
+    `);
+    client.release();
+    return result.rows.length === 3;
+  } catch (error) {
+    console.error('Erreur vérification tables:', error);
+    return false;
+  }
+}
+
+// Supprimer toutes les tables (pour reset)
+async function supprimerTables() {
+  try {
+    const client = await pool.connect();
+    console.log('🗑️  Suppression des tables existantes...');
+    
+    await client.query('DROP TABLE IF EXISTS transactions CASCADE');
+    await client.query('DROP TABLE IF EXISTS distributeur CASCADE');
+    await client.query('DROP TABLE IF EXISTS utilisateurs CASCADE');
+    
+    client.release();
+    console.log('✅ Tables supprimées avec succès');
+    return true;
+  } catch (error) {
+    console.error('❌ Erreur suppression tables:', error);
+    return false;
+  }
+}
+
+// Initialisation robuste de la BDD
 async function initialiserBDD() {
   let client;
+  
   try {
     client = await pool.connect();
-    console.log('🔄 Initialisation de la base de données...');
+    console.log('🚀 Début initialisation BDD...');
 
-    // Vérifier si les tables existent déjà
-    const tablesExist = await client.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_name = 'utilisateurs'
-      )
-    `);
-
-    if (tablesExist.rows[0].exists) {
-      console.log('✅ Tables existent déjà, vérification des structures...');
-      
-      // Vérifier et corriger les structures si nécessaire
-      await verifierEtCorrigerStructures(client);
-      
+    // Vérifier d'abord si les tables existent déjà
+    const tablesExist = await tablesExistent();
+    
+    if (tablesExist) {
+      console.log('ℹ️  Tables existent déjà, vérification structure...');
       client.release();
       return true;
     }
 
-    // Créer les tables si elles n'existent pas
     console.log('📦 Création des tables...');
-    
+
+    // 1. Table utilisateurs avec tailles CORRECTES
     await client.query(`
-      CREATE TABLE utilisateurs (
+      CREATE TABLE IF NOT EXISTS utilisateurs (
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
-        nom VARCHAR(100) NOT NULL,
+        nom VARCHAR(150) NOT NULL,
         telephone VARCHAR(30),
         password VARCHAR(255) NOT NULL,
-        solde DECIMAL(10,2) DEFAULT 0.00,
+        solde DECIMAL(12,2) DEFAULT 0.00,
         date_creation TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    console.log('✅ Table utilisateurs créée');
 
+    // 2. Table transactions avec tailles CORRECTES
     await client.query(`
-      CREATE TABLE transactions (
+      CREATE TABLE IF NOT EXISTS transactions (
         id VARCHAR(50) PRIMARY KEY,
         utilisateur_id INTEGER REFERENCES utilisateurs(id),
-        montant DECIMAL(10,2) NOT NULL,
+        montant DECIMAL(12,2) NOT NULL,
         boissons JSONB NOT NULL,
         statut VARCHAR(50) NOT NULL,
         methode_paiement VARCHAR(100),
@@ -75,91 +116,79 @@ async function initialiserBDD() {
         date_paiement TIMESTAMP
       )
     `);
+    console.log('✅ Table transactions créée');
 
+    // 3. Table distributeur
     await client.query(`
-      CREATE TABLE distributeur (
+      CREATE TABLE IF NOT EXISTS distributeur (
         id VARCHAR(50) PRIMARY KEY,
-        solde DECIMAL(10,2) DEFAULT 0.00,
+        solde DECIMAL(12,2) DEFAULT 0.00,
         updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    console.log('✅ Table distributeur créée');
 
-    // Données initiales
+    // 4. Insertion données initiales
     await client.query(`
       INSERT INTO distributeur (id, solde) 
       VALUES ('distributeur_principal', 0.00)
+      ON CONFLICT (id) DO NOTHING
     `);
+    console.log('✅ Données distributeur initialisées');
 
-    const hashedPassword = await bcrypt.hash('demo123', 10);
+    // 5. Créer utilisateur demo
+    const hashedPassword = await bcrypt.hash('demo123', 12);
     await client.query(`
       INSERT INTO utilisateurs (email, nom, telephone, password, solde) 
       VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (email) DO NOTHING
     `, ['demo@ctl.cm', 'Utilisateur Demo', '+237612345678', hashedPassword, 10000.00]);
+    console.log('✅ Utilisateur demo créé');
 
-    console.log('✅ Base de données initialisée avec succès');
     client.release();
+    console.log('🎉 Base de données initialisée avec succès!');
     return true;
 
   } catch (error) {
     if (client) client.release();
-    console.error('❌ Erreur initialisation BDD:', error.message);
+    console.error('❌ Erreur initialisation BDD:', error);
     
-    // Si c'est une erreur de structure, suggérer le reset
-    if (error.message.includes('varchar') || error.message.includes('too long')) {
-      console.log('💡 ASTUCE: Exécutez "npm run reset-db" pour réinitialiser la base de données');
+    // Tentative de récupération
+    console.log('🔄 Tentative de récupération...');
+    try {
+      await supprimerTables();
+      return await initialiserBDD();
+    } catch (retryError) {
+      console.error('❌ Échec récupération:', retryError);
+      return false;
     }
-    
-    return false;
   }
 }
 
-async function verifierEtCorrigerStructures(client) {
-  try {
-    // Vérifier la structure de la table transactions
-    const columns = await client.query(`
-      SELECT column_name, data_type, character_maximum_length 
-      FROM information_schema.columns 
-      WHERE table_name = 'transactions'
-    `);
-
-    const idColumn = columns.rows.find(col => col.column_name === 'id');
-    if (idColumn && idColumn.character_maximum_length < 50) {
-      console.log('🔄 Correction de la structure de la table transactions...');
-      // Recréer la table avec la bonne structure
-      await client.query('DROP TABLE IF EXISTS transactions CASCADE');
-      await client.query(`
-        CREATE TABLE transactions (
-          id VARCHAR(50) PRIMARY KEY,
-          utilisateur_id INTEGER REFERENCES utilisateurs(id),
-          montant DECIMAL(10,2) NOT NULL,
-          boissons JSONB NOT NULL,
-          statut VARCHAR(50) NOT NULL,
-          methode_paiement VARCHAR(100),
-          date_creation TIMESTAMP DEFAULT NOW(),
-          date_expiration TIMESTAMP,
-          date_paiement TIMESTAMP
-        )
-      `);
-    }
-  } catch (error) {
-    console.error('Erreur vérification structure:', error);
-  }
-}
-
-// Maintenance connexion
+// Maintenance automatique
 setInterval(async () => {
   try {
     const client = await pool.connect();
     await client.query('SELECT 1');
     client.release();
+    console.log('🔄 Maintenance connexion BDD OK');
   } catch (error) {
-    console.error('Erreur maintenance connexion:', error);
+    console.error('❌ Erreur maintenance BDD:', error);
   }
-}, 300000);
+}, 300000); // 5 minutes
+
+// Gestion propre des erreurs
+process.on('SIGINT', async () => {
+  console.log('🔄 Fermeture connexions BDD...');
+  await pool.end();
+  process.exit(0);
+});
 
 module.exports = {
   pool,
   testerConnexionBDD,
   initialiserBDD,
+  supprimerTables,
+  tablesExistent,
   bcrypt
 };
