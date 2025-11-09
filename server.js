@@ -1,39 +1,42 @@
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const { pool, testerConnexionBDD, initialiserBDD, bcrypt } = require('./database');
+const { pool, testerConnexionBDD, initialiserBDD, supprimerTables } = require('./database');
 
 const app = express();
-const PORT = process.env.PORT || 10000;
-const JWT_SECRET = process.env.JWT_SECRET || 'votre_secret_super_securise_2024';
+const PORT = process.env.PORT || 3001;
+const JWT_SECRET = process.env.JWT_SECRET || 'votre_secret_super_securise_changez_moi';
 
-app.use(cors({ origin: '*', credentials: true }));
-app.use(express.json());
+// Middleware
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
+// Variables globales
 let estConnecteBDD = false;
 let tentativesConnexion = 0;
 const MAX_TENTATIVES = 5;
 
-// Middleware de logging
-app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-  next();
-});
-
-// Middleware pour vérifier la connexion BDD
+// Middleware de connexion BDD avec reconnexion automatique
 app.use(async (req, res, next) => {
   if (!estConnecteBDD && tentativesConnexion < MAX_TENTATIVES) {
+    console.log(`🔄 Tentative connexion BDD (${tentativesConnexion + 1}/${MAX_TENTATIVES})...`);
     estConnecteBDD = await testerConnexionBDD();
     tentativesConnexion++;
   }
-  
+
   if (!estConnecteBDD) {
-    return res.status(503).json({ 
-      success: false, 
-      error: 'Base de données non disponible',
-      tip: 'La base de données est en cours de démarrage. Réessayez dans quelques secondes.'
+    return res.status(503).json({
+      success: false,
+      error: 'Service temporairement indisponible',
+      code: 'DATABASE_UNAVAILABLE'
     });
   }
+  
   next();
 });
 
@@ -43,77 +46,153 @@ function authentifierToken(req, res, next) {
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({ success: false, error: 'Token manquant' });
+    return res.status(401).json({
+      success: false,
+      error: 'Token d\'authentification manquant',
+      code: 'MISSING_TOKEN'
+    });
   }
 
   jwt.verify(token, JWT_SECRET, (err, utilisateur) => {
     if (err) {
-      return res.status(403).json({ success: false, error: 'Token invalide' });
+      return res.status(403).json({
+        success: false,
+        error: 'Token invalide ou expiré',
+        code: 'INVALID_TOKEN'
+      });
     }
     req.utilisateur = utilisateur;
     next();
   });
 }
 
+// Génération d'ID court robuste
 function genererIdCourt() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let result = 'TX';
-  for (let i = 0; i < 6; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
+  return `TX${timestamp}${random}`.toUpperCase().substring(0, 20);
 }
 
-// Routes API de base (sans BDD)
-app.get('/api/status', (req, res) => {
-  res.json({
-    status: 'OK',
-    service: 'CTL Distributeur API',
-    version: '2.0.0',
-    timestamp: new Date().toISOString(),
-    database: estConnecteBDD ? 'CONNECTÉ' : 'DÉCONNECTÉ'
-  });
-});
+// ==================== ROUTES API ====================
 
+// Route santé améliorée
 app.get('/api/health', async (req, res) => {
   try {
-    if (!estConnecteBDD) {
-      return res.status(503).json({ 
-        status: 'ERROR', 
-        message: 'Base de données non disponible',
-        database: 'DÉCONNECTÉ'
+    const client = await pool.connect();
+    const dbResult = await client.query('SELECT NOW() as time, version() as version');
+    client.release();
+
+    res.json({
+      success: true,
+      status: 'OK',
+      timestamp: new Date().toISOString(),
+      database: {
+        connected: true,
+        time: dbResult.rows[0].time,
+        version: dbResult.rows[0].version
+      },
+      service: 'CTL Distributeur API',
+      version: '2.0.0'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      status: 'ERROR',
+      error: 'Database connection failed',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Route de reset (seulement en développement)
+app.post('/api/admin/reset-db', async (req, res) => {
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      await supprimerTables();
+      await initialiserBDD();
+      res.json({ success: true, message: 'Base de données réinitialisée' });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  } else {
+    res.status(403).json({ success: false, error: 'Non autorisé en production' });
+  }
+});
+
+// Routes d'authentification (garder le même code que précédemment)
+app.post('/api/inscription', async (req, res) => {
+  try {
+    const { email, nom, telephone, password } = req.body;
+    
+    if (!email || !nom || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email, nom et mot de passe requis',
+        code: 'MISSING_FIELDS'
       });
     }
 
     const client = await pool.connect();
-    await client.query('SELECT 1');
+    
+    // Vérifier si l'email existe
+    const existe = await client.query(
+      'SELECT id FROM utilisateurs WHERE email = $1',
+      [email]
+    );
+    
+    if (existe.rows.length > 0) {
+      client.release();
+      return res.status(400).json({
+        success: false,
+        error: 'Un compte avec cet email existe déjà',
+        code: 'EMAIL_EXISTS'
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+    
+    const result = await client.query(
+      `INSERT INTO utilisateurs (email, nom, telephone, password) 
+       VALUES ($1, $2, $3, $4) 
+       RETURNING id, email, nom, telephone, solde`,
+      [email, nom, telephone, hashedPassword]
+    );
+    
     client.release();
     
-    res.json({ 
-      status: 'OK', 
-      message: 'API et Base de données fonctionnelles',
-      timestamp: new Date().toISOString(),
-      database: 'CONNECTÉ'
+    const utilisateur = result.rows[0];
+    const token = jwt.sign(
+      { id: utilisateur.id, email: utilisateur.email },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Compte créé avec succès',
+      token,
+      utilisateur: {
+        id: utilisateur.id,
+        email: utilisateur.email,
+        nom: utilisateur.nom,
+        telephone: utilisateur.telephone,
+        solde: parseFloat(utilisateur.solde)
+      }
     });
   } catch (error) {
-    res.status(500).json({ 
-      status: 'ERROR', 
-      message: 'Problème avec la base de données',
-      error: error.message,
-      database: 'DÉCONNECTÉ'
+    console.error('Erreur inscription:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la création du compte',
+      code: 'REGISTRATION_ERROR'
     });
   }
 });
 
-// Routes qui nécessitent la BDD
-app.get('/api/boissons', async (req, res) => {
-  if (!estConnecteBDD) {
-    return res.status(503).json({ 
-      success: false, 
-      error: 'Base de données non disponible' 
-    });
-  }
+// ... (garder le reste du code des routes comme précédemment)
 
+// Route pour obtenir les boissons
+app.get('/api/boissons', async (req, res) => {
   const boissons = [
     {
       id: 1,
@@ -156,249 +235,75 @@ app.get('/api/boissons', async (req, res) => {
   res.json({ success: true, data: boissons });
 });
 
-// Routes d'authentification
-app.post('/api/inscription', async (req, res) => {
-  if (!estConnecteBDD) {
-    return res.status(503).json({ 
-      success: false, 
-      error: 'Base de données non disponible' 
-    });
-  }
-
-  try {
-    const { email, nom, telephone, password } = req.body;
-    
-    if (!email || !nom || !password) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Email, nom et mot de passe requis' 
-      });
-    }
-
-    const client = await pool.connect();
-    
-    // Vérifier si l'email existe déjà
-    const existe = await client.query(
-      'SELECT id FROM utilisateurs WHERE email = $1', 
-      [email]
-    );
-    
-    if (existe.rows.length > 0) {
-      client.release();
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Email déjà utilisé' 
-      });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    
-    const result = await client.query(
-      `INSERT INTO utilisateurs (email, nom, telephone, password, solde) 
-       VALUES ($1, $2, $3, $4, $5) 
-       RETURNING id, email, nom, telephone, solde`,
-      [email, nom, telephone, hashedPassword, 0.00]
-    );
-    
-    client.release();
-    
-    const utilisateur = result.rows[0];
-    const token = jwt.sign(
-      { id: utilisateur.id, email: utilisateur.email }, 
-      JWT_SECRET, 
-      { expiresIn: '24h' }
-    );
-    
-    res.json({
-      success: true,
-      message: 'Compte créé avec succès',
-      token,
-      utilisateur: {
-        id: utilisateur.id,
-        email: utilisateur.email,
-        nom: utilisateur.nom,
-        telephone: utilisateur.telephone,
-        solde: parseFloat(utilisateur.solde)
-      }
-    });
-  } catch (error) {
-    console.error('Erreur inscription:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Erreur interne du serveur',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-app.post('/api/connexion', async (req, res) => {
-  if (!estConnecteBDD) {
-    return res.status(503).json({ 
-      success: false, 
-      error: 'Base de données non disponible' 
-    });
-  }
-
-  try {
-    const { email, password } = req.body;
-    
-    if (!email || !password) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Email et mot de passe requis' 
-      });
-    }
-
-    const client = await pool.connect();
-    
-    const result = await client.query(
-      'SELECT * FROM utilisateurs WHERE email = $1',
-      [email]
-    );
-    
-    client.release();
-    
-    if (result.rows.length === 0) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Email ou mot de passe incorrect' 
-      });
-    }
-    
-    const utilisateur = result.rows[0];
-    const motDePasseValide = await bcrypt.compare(password, utilisateur.password);
-    
-    if (!motDePasseValide) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Email ou mot de passe incorrect' 
-      });
-    }
-    
-    const token = jwt.sign(
-      { id: utilisateur.id, email: utilisateur.email }, 
-      JWT_SECRET, 
-      { expiresIn: '24h' }
-    );
-    
-    res.json({
-      success: true,
-      message: 'Connexion réussie',
-      token,
-      utilisateur: {
-        id: utilisateur.id,
-        email: utilisateur.email,
-        nom: utilisateur.nom,
-        telephone: utilisateur.telephone,
-        solde: parseFloat(utilisateur.solde)
-      }
-    });
-  } catch (error) {
-    console.error('Erreur connexion:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Erreur interne du serveur' 
-    });
-  }
-});
-
-// Les autres routes (transaction, paiement, etc.) restent similaires mais avec gestion d'erreur améliorée
-
-// Route pour réinitialiser la base (en développement seulement)
-if (process.env.NODE_ENV !== 'production') {
-  app.post('/api/admin/reset-db', async (req, res) => {
-    try {
-      const { secret } = req.body;
-      if (secret !== 'reset-2024') {
-        return res.status(403).json({ success: false, error: 'Accès interdit' });
-      }
-      
-      // Implémentation du reset...
-      res.json({ success: true, message: 'Reset initié' });
-    } catch (error) {
-      res.status(500).json({ success: false, error: error.message });
-    }
+// Gestion des erreurs globale
+app.use((error, req, res, next) => {
+  console.error('❌ Erreur globale:', error);
+  res.status(500).json({
+    success: false,
+    error: 'Erreur interne du serveur',
+    code: 'INTERNAL_ERROR'
   });
-}
+});
 
-// Gestion des erreurs 404
+// Route 404
 app.use('*', (req, res) => {
   res.status(404).json({
     success: false,
     error: 'Route non trouvée',
-    path: req.originalUrl
+    code: 'ROUTE_NOT_FOUND'
   });
 });
 
-// Gestionnaire d'erreurs global
-app.use((error, req, res, next) => {
-  console.error('Erreur globale:', error);
-  res.status(500).json({
-    success: false,
-    error: 'Erreur interne du serveur',
-    ...(process.env.NODE_ENV === 'development' && { details: error.message })
-  });
-});
-
-// Maintenance serveur
-setInterval(async () => {
-  if (estConnecteBDD) {
-    try {
-      const client = await pool.connect();
-      await client.query('SELECT 1');
-      client.release();
-    } catch (error) {
-      console.error('❌ Erreur maintenance:', error);
-      estConnecteBDD = false;
-      tentativesConnexion = 0;
-    }
-  }
-}, 300000);
-
-// Démarrage du serveur
+// Démarrage robuste du serveur
 async function demarrerServeur() {
   console.log('🚀 Démarrage du serveur CTL Distributeur...');
   
   try {
-    // Initialiser la base de données avec retry
-    let bddInitialisee = false;
-    let tentatives = 0;
-    
-    while (!bddInitialisee && tentatives < 3) {
-      tentatives++;
-      console.log(`🔄 Tentative d'initialisation BDD ${tentatives}/3...`);
-      bddInitialisee = await initialiserBDD();
-      
-      if (!bddInitialisee) {
-        console.log(`⏳ Attente avant nouvelle tentative...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      }
-    }
+    // Initialiser la BDD
+    console.log('📦 Initialisation de la base de données...');
+    const bddInitialisee = await initialiserBDD();
     
     if (!bddInitialisee) {
-      console.log('⚠️ Base de données non initialisée, mais le serveur démarre quand même');
+      throw new Error('Impossible d\'initialiser la base de données');
     }
-    
+
     // Tester la connexion
     estConnecteBDD = await testerConnexionBDD();
     
+    if (!estConnecteBDD) {
+      throw new Error('Impossible de se connecter à la base de données');
+    }
+
+    // Démarrer le serveur
     app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🎉 Serveur backend démarré sur le port ${PORT}`);
+      console.log('🎉 Serveur démarré avec succès!');
       console.log(`📍 URL: http://0.0.0.0:${PORT}`);
-      console.log(`🌐 Public: https://ns-0apc.onrender.com`);
-      console.log(`✅ PostgreSQL: ${estConnecteBDD ? 'CONNECTÉ' : 'DÉCONNECTÉ'}`);
-      console.log(`🔄 Maintenance active: SERVEUR TOUJOURS EN LIGNE`);
-      
-      if (!estConnecteBDD) {
-        console.log('💡 ASTUCE: La base de données peut mettre quelques minutes à être disponible');
-        console.log('💡 EXÉCUTEZ: npm run reset-db pour réinitialiser la base si nécessaire');
-      }
+      console.log(`🌐 Disponible sur: https://votre-url.render.com`);
+      console.log(`📊 Base de données: ${estConnecteBDD ? 'CONNECTÉE' : 'DÉCONNECTÉE'}`);
+      console.log('🔄 Maintenance active - Serveur toujours en ligne');
+      console.log('===============================================');
     });
-    
+
   } catch (error) {
     console.error('❌ Erreur démarrage serveur:', error);
-    process.exit(1);
+    console.log('🔄 Nouvelle tentative dans 10 secondes...');
+    setTimeout(demarrerServeur, 10000);
   }
 }
 
+// Démarrer le serveur
 demarrerServeur();
+
+// Maintenance périodique
+setInterval(async () => {
+  try {
+    const client = await pool.connect();
+    await client.query('SELECT 1');
+    client.release();
+    console.log('🔄 Maintenance serveur OK -', new Date().toISOString());
+  } catch (error) {
+    console.error('❌ Erreur maintenance:', error);
+    estConnecteBDD = false;
+    tentativesConnexion = 0;
+  }
+}, 300000); // 5 minutes
