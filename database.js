@@ -25,13 +25,13 @@ async function initialiserBDD() {
   try {
     const client = await pool.connect();
     
-    // Table des utilisateurs
+    // Table des utilisateurs - CORRIGÉ les tailles de colonnes
     await client.query(`
       CREATE TABLE IF NOT EXISTS utilisateurs (
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
         nom VARCHAR(100) NOT NULL,
-        telephone VARCHAR(20),
+        telephone VARCHAR(30),
         password VARCHAR(255) NOT NULL,
         solde DECIMAL(10,2) DEFAULT 0.00,
         date_creation TIMESTAMP DEFAULT NOW(),
@@ -39,15 +39,15 @@ async function initialiserBDD() {
       )
     `);
     
-    // Table des transactions
+    // Table des transactions - CORRIGÉ les tailles de colonnes
     await client.query(`
       CREATE TABLE IF NOT EXISTS transactions (
-        id VARCHAR(20) PRIMARY KEY,
+        id VARCHAR(50) PRIMARY KEY, -- Augmenté de 20 à 50
         utilisateur_id INTEGER REFERENCES utilisateurs(id),
         montant DECIMAL(10,2) NOT NULL,
         boissons JSONB NOT NULL,
-        statut VARCHAR(20) NOT NULL,
-        methode_paiement VARCHAR(50),
+        statut VARCHAR(50) NOT NULL, -- Augmenté de 20 à 50
+        methode_paiement VARCHAR(100), -- Augmenté de 50 à 100
         date_creation TIMESTAMP DEFAULT NOW(),
         date_expiration TIMESTAMP,
         date_paiement TIMESTAMP
@@ -57,7 +57,7 @@ async function initialiserBDD() {
     // Table du distributeur
     await client.query(`
       CREATE TABLE IF NOT EXISTS distributeur (
-        id VARCHAR(20) PRIMARY KEY,
+        id VARCHAR(50) PRIMARY KEY, -- Augmenté de 20 à 50
         solde DECIMAL(10,2) DEFAULT 0.00,
         updated_at TIMESTAMP DEFAULT NOW()
       )
