@@ -9,12 +9,23 @@ const pool = new Pool({
   max: 20,
 });
 
-// Initialisation BDD
+async function testerConnexionBDD() {
+  try {
+    const client = await pool.connect();
+    console.log('✅ Connexion PostgreSQL établie');
+    client.release();
+    return true;
+  } catch (error) {
+    console.error('❌ Erreur connexion PostgreSQL:', error);
+    return false;
+  }
+}
+
 async function initialiserBDD() {
   try {
     const client = await pool.connect();
     
-    // Table utilisateurs
+    // Table des utilisateurs
     await client.query(`
       CREATE TABLE IF NOT EXISTS utilisateurs (
         id SERIAL PRIMARY KEY,
@@ -23,12 +34,12 @@ async function initialiserBDD() {
         telephone VARCHAR(20),
         password VARCHAR(255) NOT NULL,
         solde DECIMAL(10,2) DEFAULT 0.00,
-        created_at TIMESTAMP DEFAULT NOW(),
+        date_creation TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
-
-    // Table transactions
+    
+    // Table des transactions
     await client.query(`
       CREATE TABLE IF NOT EXISTS transactions (
         id VARCHAR(20) PRIMARY KEY,
@@ -42,34 +53,33 @@ async function initialiserBDD() {
         date_paiement TIMESTAMP
       )
     `);
-
-    // Table distributeur
+    
+    // Table du distributeur
     await client.query(`
       CREATE TABLE IF NOT EXISTS distributeur (
         id VARCHAR(20) PRIMARY KEY,
         solde DECIMAL(10,2) DEFAULT 0.00,
-        total_transactions INTEGER DEFAULT 0,
         updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
-
-    // Insérer le distributeur s'il n'existe pas
+    
+    // Insérer le distributeur
     await client.query(`
-      INSERT INTO distributeur (id, solde, total_transactions) 
-      VALUES ('distributeur_principal', 0.00, 0)
+      INSERT INTO distributeur (id, solde) 
+      VALUES ('distributeur_principal', 0.00)
       ON CONFLICT (id) DO NOTHING
     `);
-
-    // Créer un utilisateur admin par défaut
-    const hashedPassword = await bcrypt.hash('admin123', 10);
+    
+    // Créer un utilisateur demo
+    const hashedPassword = await bcrypt.hash('demo123', 10);
     await client.query(`
       INSERT INTO utilisateurs (email, nom, telephone, password, solde) 
       VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (email) DO NOTHING
-    `, ['admin@distributeur.com', 'Administrateur', '237690000000', hashedPassword, 10000.00]);
-
+    `, ['demo@ctl.cm', 'Utilisateur Demo', '+237612345678', hashedPassword, 10000.00]);
+    
     client.release();
-    console.log('✅ Base de données premium initialisée');
+    console.log('✅ Base de données initialisée avec succès');
     return true;
   } catch (error) {
     console.error('❌ Erreur initialisation BDD:', error);
@@ -77,7 +87,7 @@ async function initialiserBDD() {
   }
 }
 
-// Garder la connexion active
+// Maintenance connexion
 setInterval(async () => {
   try {
     const client = await pool.connect();
@@ -90,6 +100,7 @@ setInterval(async () => {
 
 module.exports = {
   pool,
+  testerConnexionBDD,
   initialiserBDD,
   bcrypt
 };
