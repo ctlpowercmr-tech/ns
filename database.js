@@ -2,7 +2,7 @@ const { Pool } = require('pg');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl: { rejectUnauthorized: false },
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
   max: 20,
@@ -26,24 +26,23 @@ async function initialiserBDD() {
     
     // Table des utilisateurs
     await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
+      CREATE TABLE IF NOT EXISTS utilisateurs (
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
         nom VARCHAR(100) NOT NULL,
-        prenom VARCHAR(100) NOT NULL,
         telephone VARCHAR(20),
+        password_hash VARCHAR(255) NOT NULL,
         solde DECIMAL(10,2) DEFAULT 0.00,
-        created_at TIMESTAMP DEFAULT NOW(),
+        date_creation TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
-
+    
     // Table des transactions
     await client.query(`
       CREATE TABLE IF NOT EXISTS transactions (
         id VARCHAR(20) PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id),
+        utilisateur_id INTEGER REFERENCES utilisateurs(id),
         montant DECIMAL(10,2) NOT NULL,
         boissons JSONB NOT NULL,
         statut VARCHAR(20) NOT NULL,
@@ -53,47 +52,34 @@ async function initialiserBDD() {
         date_paiement TIMESTAMP
       )
     `);
-
+    
     // Table des produits
     await client.query(`
       CREATE TABLE IF NOT EXISTS produits (
         id SERIAL PRIMARY KEY,
         nom VARCHAR(100) NOT NULL,
         prix DECIMAL(10,2) NOT NULL,
-        marque VARCHAR(50) NOT NULL,
-        taille VARCHAR(20) NOT NULL,
-        image_url TEXT,
+        image_url VARCHAR(500),
         categorie VARCHAR(50),
         stock INTEGER DEFAULT 100,
-        created_at TIMESTAMP DEFAULT NOW()
+        disponible BOOLEAN DEFAULT true
       )
     `);
-
+    
     // Insérer les produits initiaux
     await client.query(`
-      INSERT INTO produits (nom, prix, marque, taille, image_url, categorie) VALUES
-      ('Coca-Cola Classique', 500, 'Coca-Cola', '33cl', '/images/coca-classique.jpg', 'Soda'),
-      ('Coca-Cola Zéro', 500, 'Coca-Cola', '33cl', '/images/coca-zero.jpg', 'Soda'),
-      ('Pepsi Classique', 450, 'Pepsi', '33cl', '/images/pepsi-classique.jpg', 'Soda'),
-      ('Pepsi Max', 450, 'Pepsi', '33cl', '/images/pepsi-max.jpg', 'Soda'),
-      ('Fanta Orange', 400, 'Fanta', '33cl', '/images/fanta-orange.jpg', 'Soda'),
-      ('Sprite', 400, 'Sprite', '33cl', '/images/sprite.jpg', 'Soda'),
-      ('Orangina', 450, 'Orangina', '33cl', '/images/orangina.jpg', 'Soda'),
-      ('Schweppes Tonic', 450, 'Schweppes', '33cl', '/images/schweppes-tonic.jpg', 'Soda'),
-      ('Ice Tea Pêche', 400, 'Lipton', '33cl', '/images/ice-teach-peche.jpg', 'Thé'),
-      ('Eau Minérale', 300, 'Source', '50cl', '/images/eau-minerale.jpg', 'Eau'),
-      ('Jus d''Orange', 600, 'Jus Pur', '25cl', '/images/jus-orange.jpg', 'Jus'),
-      ('Café Glacé', 700, 'Nescafé', '25cl', '/images/cafe-glace.jpg', 'Café')
+      INSERT INTO produits (nom, prix, image_url, categorie) VALUES
+      ('Coca-Cola 33cl', 500, '/images/coca-can.png', 'soda'),
+      ('Pepsi 33cl', 450, '/images/pepsi-can.png', 'soda'),
+      ('Fanta Orange 33cl', 450, '/images/fanta-can.png', 'soda'),
+      ('Sprite 33cl', 450, '/images/sprite-can.png', 'soda'),
+      ('Coca-Cola 50cl', 700, '/images/coca-bottle.png', 'soda'),
+      ('Pepsi 50cl', 650, '/images/pepsi-bottle.png', 'soda'),
+      ('Monster Energy', 1000, '/images/monster-can.png', 'energy'),
+      ('Ice Tea Pêche', 600, '/images/icetea-can.png', 'tea')
       ON CONFLICT DO NOTHING
     `);
-
-    // Créer un utilisateur admin par défaut
-    await client.query(`
-      INSERT INTO users (email, password, nom, prenom, solde) 
-      VALUES ('admin@distributeur.com', '$2a$10$rOzZIIbCjA5qGYwW1yq.3.FrU1AjcYj1JqJ1JqJ1JqJ1JqJ1JqJ1Jq', 'Admin', 'System', 100000.00)
-      ON CONFLICT (email) DO NOTHING
-    `);
-
+    
     client.release();
     console.log('✅ Base de données initialisée avec succès');
     return true;
@@ -103,15 +89,13 @@ async function initialiserBDD() {
   }
 }
 
-// Maintenance de la connexion
 setInterval(async () => {
   try {
     const client = await pool.connect();
     await client.query('SELECT 1');
     client.release();
-    console.log('🔄 Connexion PostgreSQL maintenue active');
   } catch (error) {
-    console.error('❌ Erreur maintenance connexion:', error);
+    console.error('Erreur maintenance connexion:', error);
   }
 }, 300000);
 
